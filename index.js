@@ -1,10 +1,39 @@
+var async = require('async');
+var _ = require('lodash');
+var db2 = require('ibm_db');
+var WaterlineAdapterErrors = require('waterline-errors').adapter;
+
+
 /**
- * Module Dependencies
+ * Waterline uses columnName property -when defined on model- to define dynamic methods to access to instances. Since
+ * db2 columns are always uppercase, id field on model needs columnName = ID. In example:
+ *
+ * id: {
+ *       primaryKey: true,
+ *       autoIncrement: true,
+ *       columnName: 'ID',
+ *       type: 'text'
+ *     }
+ *
+ * Interpolated code in controllers expects for some cases the existance of a function findOneById, which wont exist,
+ * since columnName for oracle needs to be 'ID', and then, the dynamically generated function will be 'findOneByID' (
+ * note the ID in uppercase). To workaround this, during adapter bootstrap this function needs to be executed to copy
+ * implementation of function findByOneID to findByOneId.
+ *
+ * @param collections collections object
+ * @returns {*} augmented collections object with collections that now will contain a findOneById function
+ * @private
+ * @TODO This is the very same fix used in Oracle Adapter. It would be created a common library or something to avoid
+ * duplicated code.
  */
-var async = require('async'),
-    _ = require('lodash'),
-    db2 = require('ibm_db'),
-    WaterlineAdapterErrors = require('waterline-errors').adapter;
+function _fixDynamicallyGeneratedFindById(collections) {
+    Object.keys(collections).forEach(function (name) {
+        if (collections[name]["findOneByID"]) collections[name]["findOneById"] = collections[name]["findOneByID"];
+    });
+
+    return collections;
+}
+
 
 /**
  * Sails Boilerplate Adapter
@@ -23,45 +52,18 @@ var async = require('async'),
 module.exports = (function () {
     var me = this;
 
-    // You'll want to maintain a reference to each collection
-    // (aka model) that gets registered with this adapter.
     me.connections = {};
 
-
-    // You may also want to store additional, private data
-    // per-collection (esp. if your data store uses persistent
-    // connections).
-    //
-    // Keep in mind that models can be configured to use different databases
-    // within the same app, at the same time.
-    //
-    // i.e. if you're writing a MariaDB adapter, you should be aware that one
-    // model might be configured as `host="localhost"` and another might be using
-    // `host="foo.com"` at the same time.  Same thing goes for user, database,
-    // password, or any other config.
-    //
-    // You don't have to support this feature right off the bat in your
-    // adapter, but it ought to get done eventually.
-    //
-    // Sounds annoying to deal with...
-    // ...but it's not bad.  In each method, acquire a connection using the config
-    // for the current model (looking it up from `_modelReferences`), establish
-    // a connection, then tear it down before calling your method's callback.
-    // Finally, as an optimization, you might use a db pool for each distinct
-    // connection configuration, partioning pools for each separate configuration
-    // for your adapter (i.e. worst case scenario is a pool for each model, best case
-    // scenario is one single single pool.)  For many databases, any change to
-    // host OR database OR user OR password = separate pool.
     me.dbPools = {};
 
     me.getConnectionString = function (connection) {
         var connectionData = [
             'DRIVER={DB2}',
             'DATABASE=' + connection.config.database,
-            'HOSTNAME=' +  connection.config.host,
-            'UID=' +  connection.config.user,
-            'PWD=' +  connection.config.password,
-            'PORT=' +  connection.config.port,
+            'HOSTNAME=' + connection.config.host,
+            'UID=' + connection.config.user,
+            'PWD=' + connection.config.password,
+            'PORT=' + connection.config.port,
             'PROTOCOL=TCPIP'
         ];
 
@@ -72,9 +74,6 @@ module.exports = (function () {
         return "'" + word.replace("'", "''") + "'";
     };
 
-    // Data types
-    // Waterline source: https://www.npmjs.org/package/waterline#attributes
-    // IBM DB2 source: http://publib.boulder.ibm.com/infocenter/dzichelp/v2r2/index.jsp?topic=%2Fcom.ibm.db2z9.doc.sqlref%2Fsrc%2Ftpc%2Fdb2z_datatypesintro.htm
     me.typeMap = {
         // Times
         TIMESTMP: 'time',
@@ -146,40 +145,19 @@ module.exports = (function () {
     var adapter = {
         identity: 'sails-db2',
 
-        // Set to true if this adapter supports (or requires) things like data types, validations, keys, etc.
-        // If true, the schema for models using this adapter will be automatically synced when the server starts.
-        // Not terribly relevant if your data store is not SQL/schemaful.
         syncable: true,
 
-
-        // Default configuration for collections
-        // (same effect as if these properties were included at the top level of the model definitions)
         defaults: {
             host: 'localhost',
             port: 50000,
             schema: true,
             ssl: false,
-
-            // If setting syncable, you should consider the migrate option,
-            // which allows you to set how the sync will be performed.
-            // It can be overridden globally in an app (config/adapters.js)
-            // and on a per-model basis.
-            //
-            // IMPORTANT:
-            // `migrate` is not a production data migration solution!
-            // In production, always use `migrate: safe`
-            //
-            // drop   => Drop schema and data, then recreate it
-            // alter  => Drop/add columns as necessary.
-            // safe   => Don't change anything (good for production DBs)
             migrate: 'alter'
         },
 
 
         /**
-         *
-         * This method runs when a model is initially registered
-         * at server-start-time.  This is the only required method.
+         * This method runs when a model is initially registered at server-start-time.  This is the only required method.
          *
          * @param  {[type]}   collection [description]
          * @param  {Function} cb         [description]
@@ -197,14 +175,15 @@ module.exports = (function () {
                 conn: null
             };
 
+            collections = _fixDynamicallyGeneratedFindById(collections);
+
             return cb();
         },
 
 
         /**
-         * Fired when a model is unregistered, typically when the server
-         * is killed. Useful for tearing-down remaining open connections,
-         * etc.
+         * Fired when a model is unregistered, typically when the server is killed. Useful for tearing-down remaining open
+         * connections, etc.
          *
          * @param  {Function} cb [description]
          * @return {[type]}      [description]
@@ -225,9 +204,7 @@ module.exports = (function () {
 
 
         /**
-         *
-         * REQUIRED method if integrating with a schemaful
-         * (SQL-ish) database.
+         * REQUIRED method if integrating with a schemaful (SQL-ish) database.
          *
          * @param  {[type]}   collectionName [description]
          * @param  {[type]}   definition     [description]
@@ -285,9 +262,7 @@ module.exports = (function () {
         },
 
         /**
-         *
-         * REQUIRED method if integrating with a schemaful
-         * (SQL-ish) database.
+         * REQUIRED method if integrating with a schemaful (SQL-ish) database.
          *
          * @param  {[type]}   collectionName [description]
          * @param  {Function} cb             [description]
@@ -298,7 +273,6 @@ module.exports = (function () {
                 collection = connection.collections[collectionName],
                 query = 'SELECT DISTINCT(NAME), COLTYPE, IDENTITY, KEYSEQ, NULLS FROM Sysibm.syscolumns WHERE tbname = ' + me.escape(collectionName);
 
-            // @todo: use DB2 Database describe method instead of a SQL Query
             adapter.query(connectionName, collectionName, query, function (err, attrs) {
                 if (err) return cb(err);
                 if (attrs.length === 0) return cb(null, null);
@@ -326,10 +300,7 @@ module.exports = (function () {
 
 
         /**
-         *
-         *
-         * REQUIRED method if integrating with a schemaful
-         * (SQL-ish) database.
+         * REQUIRED method if integrating with a schemaful (SQL-ish) database.
          *
          * @param  {[type]}   collectionName [description]
          * @param  {[type]}   relations      [description]
@@ -361,7 +332,7 @@ module.exports = (function () {
                             cb(null, result);
                         };
 
-                    async.eachSeries(relations, dropTable, function(err) {
+                    async.eachSeries(relations, dropTable, function (err) {
                         if (err) return cb(err);
 
                         return dropTable(collectionName, passCallback);
@@ -381,15 +352,6 @@ module.exports = (function () {
             else return db2.open(connectionString, operationCallback);
         },
 
-
-        // OVERRIDES NOT CURRENTLY FULLY SUPPORTED FOR:
-        //
-        // alter: function (collectionName, changes, cb) {},
-        // addAttribute: function(collectionName, attrName, attrDef, cb) {},
-        // removeAttribute: function(collectionName, attrName, attrDef, cb) {},
-        // alterAttribute: function(collectionName, attrName, attrDef, cb) {},
-        // addIndex: function(indexName, options, cb) {},
-        // removeIndex: function(indexName, options, cb) {},
 
         query: function (connectionName, collectionName, query, data, cb) {
             if (_.isFunction(data)) {
@@ -422,13 +384,10 @@ module.exports = (function () {
 
 
         /**
+         * REQUIRED method if users expect to call Model.find(), Model.findOne(), or related.
          *
-         * REQUIRED method if users expect to call Model.find(), Model.findOne(),
-         * or related.
-         *
-         * You should implement this method to respond with an array of instances.
-         * Waterline core will take care of supporting all the other different
-         * find methods/usages.
+         * You should implement this method to respond with an array of instances. Waterline core will take care of
+         * supporting all the other different find methods/usages.
          *
          * @param  {[type]}   collectionName [description]
          * @param  {[type]}   options        [description]
@@ -473,16 +432,6 @@ module.exports = (function () {
 
                     sqlQuery += selectQuery + fromQuery + whereQuery + sortQuery + limitQuery;
                     connection.conn.query(sqlQuery, params, cb);
-
-                    // Options object is normalized for you:
-                    //
-                    // options.where
-                    // options.limit
-                    // options.sort
-
-                    // Filter, paginate, and sort records from the datastore.
-                    // You should end up w/ an array of objects as a result.
-                    // If no matches were found, this will be an empty array.
                 },
                 operationCallback = function (err, conn) {
                     if (err) return cb(err);
@@ -497,7 +446,6 @@ module.exports = (function () {
         },
 
         /**
-         *
          * REQUIRED method if users expect to call Model.create() or any methods
          *
          * @param  {[type]}   collectionName [description]
@@ -510,20 +458,19 @@ module.exports = (function () {
                 collection = connection.collections[collectionName],
                 connectionString = me.getConnectionString(connection),
                 __CREATE__ = function () {
-                    var selectQuery = me.getSelectAttributes(collection),
-                        columns = [],
-                        params = [],
-                        questions = [];
+                    var selectQuery = me.getSelectAttributes(collection);
+                    var columns = [];
+                    var params = [];
+                    var questions = [];
 
                     _.each(values, function (param, column) {
                         if (collection.definition.hasOwnProperty(column)) {
                             columns.push(column);
-                            params.push(param);
-                            questions.push('?');
+                            questions.push("'" + param + "'");
                         }
                     });
 
-                    connection.conn.query('SELECT ' + selectQuery + ' FROM FINAL TABLE (INSERT INTO ' + collection.tableName + ' (' + columns.join(',') + ') VALUES (' + questions.join(',') + '))', params, function (err, results) {
+                    connection.conn.query('SELECT ' + selectQuery + ' FROM FINAL TABLE (INSERT INTO ' + collection.tableName + ' (' + columns.join(',') + ') VALUES (' + questions.join(',') + '))', null, function (err, results) {
                         if (err) cb(err);
                         else cb(null, results[0]);
                     });
@@ -541,8 +488,6 @@ module.exports = (function () {
         },
 
         /**
-         *
-         *
          * REQUIRED method if users expect to call Model.update()
          *
          * @param  {[type]}   collectionName [description]
@@ -556,26 +501,25 @@ module.exports = (function () {
                 collection = connection.collections[collectionName],
                 connectionString = me.getConnectionString(connection),
                 __UPDATE__ = function () {
-                    var selectQuery = me.getSelectAttributes(collection),
-                        setData = [],
-                        setQuery = '',
-                        whereData = [],
-                        whereQuery = '',
-                        params = [],
-                        sqlQuery = '';
+
+                    var selectQuery = me.getSelectAttributes(collection);
+                    var setData = [];
+                    var setQuery = '';
+                    var whereData = [];
+                    var whereQuery = '';
+                    var params = [];
+                    var sqlQuery = '';
 
                     _.each(values, function (param, column) {
                         if (collection.definition.hasOwnProperty(column) && !collection.definition[column].autoIncrement) {
-                            setData.push(column + ' = ?');
-                            params.push(param);
+                            setData.push(column + ' = ' + "'" + param + "'");
                         }
                     });
                     setQuery = ' SET ' + setData.join(',');
 
                     _.each(options.where, function (param, column) {
                         if (collection.definition.hasOwnProperty(column)) {
-                            whereData.push(column + ' = ?');
-                            params.push(param);
+                            whereData.push(column + ' = ' + "'" + param + "'");
                         }
                     });
                     whereQuery += whereData.join(' AND ');
@@ -584,7 +528,7 @@ module.exports = (function () {
 
                     sqlQuery = 'SELECT ' + selectQuery + ' FROM FINAL TABLE (UPDATE ' + collection.tableName + setQuery + whereQuery + ')';
 
-                    connection.conn.query(sqlQuery, params, function (err, results) {
+                    connection.conn.query(sqlQuery, null, function (err, results) {
                         if (err) cb(err);
                         else cb(null, results[0]);
                     });
@@ -602,7 +546,6 @@ module.exports = (function () {
         },
 
         /**
-         *
          * REQUIRED method if users expect to call Model.destroy()
          *
          * @param  {[type]}   collectionName [description]
@@ -642,101 +585,7 @@ module.exports = (function () {
             if (connection.pool) return connection.pool.open(connectionString, operationCallback);
             else return db2.open(connectionString, operationCallback);
         }
-
-
-        /*
-         **********************************************
-         * Optional overrides
-         **********************************************
-
-         // Optional override of built-in batch create logic for increased efficiency
-         // (since most databases include optimizations for pooled queries, at least intra-connection)
-         // otherwise, Waterline core uses create()
-         createEach: function (collectionName, arrayOfObjects, cb) { cb(); },
-
-         // Optional override of built-in findOrCreate logic for increased efficiency
-         // (since most databases include optimizations for pooled queries, at least intra-connection)
-         // otherwise, uses find() and create()
-         findOrCreate: function (collectionName, arrayOfAttributeNamesWeCareAbout, newAttributesObj, cb) { cb(); },
-         */
-
-
-        /*
-         **********************************************
-         * Custom methods
-         **********************************************
-
-         ////////////////////////////////////////////////////////////////////////////////////////////////////
-         //
-         // > NOTE:  There are a few gotchas here you should be aware of.
-         //
-         //    + The collectionName argument is always prepended as the first argument.
-         //      This is so you can know which model is requesting the adapter.
-         //
-         //    + All adapter functions are asynchronous, even the completely custom ones,
-         //      and they must always include a callback as the final argument.
-         //      The first argument of callbacks is always an error object.
-         //      For core CRUD methods, Waterline will add support for .done()/promise usage.
-         //
-         //    + The function signature for all CUSTOM adapter methods below must be:
-         //      `function (collectionName, options, cb) { ... }`
-         //
-         ////////////////////////////////////////////////////////////////////////////////////////////////////
-
-
-         // Custom methods defined here will be available on all models
-         // which are hooked up to this adapter:
-         //
-         // e.g.:
-         //
-         foo: function (collectionName, options, cb) {
-         return cb(null,"ok");
-         },
-         bar: function (collectionName, options, cb) {
-         if (!options.jello) return cb("Failure!");
-         else return cb();
-         }
-
-         // So if you have three models:
-         // Tiger, Sparrow, and User
-         // 2 of which (Tiger and Sparrow) implement this custom adapter,
-         // then you'll be able to access:
-         //
-         // Tiger.foo(...)
-         // Tiger.bar(...)
-         // Sparrow.foo(...)
-         // Sparrow.bar(...)
-
-
-         // Example success usage:
-         //
-         // (notice how the first argument goes away:)
-         Tiger.foo({}, function (err, result) {
-         if (err) return console.error(err);
-         else console.log(result);
-
-         // outputs: ok
-         });
-
-         // Example error usage:
-         //
-         // (notice how the first argument goes away:)
-         Sparrow.bar({test: 'yes'}, function (err, result){
-         if (err) console.error(err);
-         else console.log(result);
-
-         // outputs: Failure!
-         })
-
-
-
-
-         */
-
-
     };
 
-
-    // Expose adapter definition
     return adapter;
 })();

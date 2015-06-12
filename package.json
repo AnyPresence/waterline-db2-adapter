@@ -24,6 +24,11 @@
   "author": "Ibuildings SRL <info@ibuildings.it> (http://ibuildings.it/)",
   "contributors": [
     {
+      "name": "Juan Carlos Cancela",
+      "email": "jcancela@anypresence.com",
+      "url": "https://github.com/juancancela"
+    },
+    {
       "name": "Eugenio Minardi",
       "email": "eugenio@ibuildings.it",
       "url": "https://github.com/kmox83"
